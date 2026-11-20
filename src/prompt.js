@@ -14,14 +14,22 @@ How you work:
 - Call get_bus_arrivals only when the user gives a bus stop code or asks about a specific bus.
 - Recommend one or two places, not a list of ten. Say why.
 - If a place is closed, say so and pick something else.
+- If a tool returns an error, say briefly that you cannot check that right now. Never guess the answer.
+- Each user message ends with the current Singapore time in brackets. Use it for "now", lunch hours and opening times.
 - Keep replies under 120 words.`;
 
 /**
- * Build the system prompt for one request.
+ * The system prompt is identical on every request, so the provider can
+ * cache it together with the tool definitions. Anything that changes per
+ * request (like the time) goes into the user message instead.
  */
-export function buildSystemPrompt(date = new Date()) {
-  const requestId = crypto.randomUUID();
-  return `Request ${requestId}. It is now ${formatSingaporeTime(date)}. ${PERSONA}`;
+export const SYSTEM_PROMPT = PERSONA;
+
+/**
+ * Append the current Singapore time to a user message.
+ */
+export function withCurrentTime(message, date = new Date()) {
+  return `${message}\n\n[Current time: ${formatSingaporeTime(date)}]`;
 }
 
 /**

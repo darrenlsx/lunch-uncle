@@ -42,7 +42,7 @@ sequenceDiagram
    OPENCODE_API_KEY=your-key-here
    GOOGLE_PLACES_API_KEY=your-key-here
    ```
-4. Fill in the two `TODO` constants at the top of `src/loop.js`: `LLM_BASE_URL` and `LLM_MODEL`, for the OpenCode Go endpoint and model. The Go endpoint requires an `x-opencode-session` header, which `callModel` already sends.
+4. Check the two constants at the top of `src/loop.js`. In this fork they are already set: `LLM_BASE_URL` is `https://opencode.ai/inference/go/v1` and `LLM_MODEL` is `deepseek-v4.1-flash`. To use another OpenCode Go model, pick an id from https://opencode.ai/inference/go/v1/models. If either is left as `TODO`, the chat shows a setup message pointing back to this step.
 5. Start the dev server:
    ```sh
    npm run dev
@@ -55,7 +55,7 @@ sequenceDiagram
    npm run deploy
    ```
 
-Secrets never go in code or in `wrangler.toml`. Local development reads them from `.env`, which is gitignored; production reads them from Cloudflare secrets set with `wrangler secret put`.
+Secrets never go in code or in `wrangler.toml`. Local development reads them from `.env` (or `.dev.vars`), both gitignored; production reads them from Cloudflare secrets set with `wrangler secret put`.
 
 ## Running tests
 

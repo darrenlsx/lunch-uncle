@@ -1,5 +1,6 @@
 import ui from "./ui.html";
-import { runLoop } from "./loop.js";
+import { runLoop, ConfigError } from "./loop.js";
+import { sanitizeHistory, cleanSessionId, MAX_MESSAGE_CHARS } from "./history.js";
 
 export default {
   async fetch(request, env) {
@@ -27,16 +28,34 @@ async function handleChat(request, env) {
     return json({ error: "Body must be JSON" }, 400);
   }
 
-  const { history = [], message } = body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "Body must be a JSON object" }, 400);
+  }
+
+  const { message, session_id } = body;
   if (typeof message !== "string" || message.trim() === "") {
     return json({ error: "message is required" }, 400);
   }
+  if (message.length > MAX_MESSAGE_CHARS) {
+    return json({ error: `message must be at most ${MAX_MESSAGE_CHARS} characters` }, 400);
+  }
+
+  const { history, error } = sanitizeHistory(body.history);
+  if (error) {
+    return json({ error }, 400);
+  }
 
   try {
-    const reply = await runLoop(history, message, env);
-    return json({ reply });
+    const { reply, messages } = await runLoop(history, message.trim(), env, {
+      sessionId: cleanSessionId(session_id) ?? undefined,
+    });
+    return json({ reply, messages });
   } catch (err) {
-    console.error("chat failed:", err);
+    if (err instanceof ConfigError) {
+      console.error("config error:", err.message);
+      return json({ error: `Setup problem: ${err.message}` }, 500);
+    }
+    console.error("chat failed:", err?.message ?? err);
     return json({ error: "Uncle cannot think right now, try again later." }, 500);
   }
 }

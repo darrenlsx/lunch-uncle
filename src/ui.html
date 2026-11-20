@@ -118,7 +118,7 @@
   </div>
 
   <form id="form">
-    <input id="input" placeholder="Uncle, where to eat?" aria-label="Message to Uncle" autocomplete="off" autofocus>
+    <input id="input" placeholder="Uncle, where to eat?" aria-label="Message to Uncle" maxlength="1000" autocomplete="off" autofocus>
     <button id="send" type="submit">Send</button>
   </form>
 
@@ -129,10 +129,25 @@
     const send = document.getElementById("send");
     const chips = document.getElementById("chips");
 
-    // Conversation so far, in the shape the /chat endpoint expects.
-    // Only successful exchanges are added, so errors never reach the model.
-    const history = [];
+    // Conversation so far, in the shape the /chat endpoint expects. It holds
+    // every message the server returns for a turn, including tool calls and
+    // results, so follow-up questions can reuse them. Only successful turns
+    // are added, so errors never reach the model.
+    let history = [];
+    const MAX_HISTORY = 40;
+    // One id per conversation, so the provider can cache across turns.
+    const sessionId = crypto.randomUUID ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
     let busy = false;
+
+    function remember(messages) {
+      history = history.concat(messages);
+      // Drop the oldest whole turns (each starts with a user message).
+      while (history.length > MAX_HISTORY) {
+        const next = history.findIndex((m, i) => i > 0 && m.role === "user");
+        history = next === -1 ? [] : history.slice(next);
+      }
+    }
 
     function scrollDown() {
       chat.scrollTop = chat.scrollHeight;
@@ -222,7 +237,7 @@
         const res = await fetch("/chat", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ history, message }),
+          body: JSON.stringify({ history, message, session_id: sessionId }),
         });
         let data = null;
         try { data = await res.json(); } catch { /* non-JSON body */ }
@@ -234,8 +249,8 @@
         }
 
         addBubble("assistant", data.reply);
-        history.push({ role: "user", content: message });
-        history.push({ role: "assistant", content: data.reply });
+        remember(Array.isArray(data.messages) ? data.messages
+          : [{ role: "user", content: message }, { role: "assistant", content: data.reply }]);
       } catch {
         stopTyping();
         addError("Cannot reach Uncle. Check your connection.", message);

@@ -13,6 +13,12 @@ const SEARCH_RADIUS_METRES = 800;
 const MAX_PLACES = 10;
 const FORECAST_AREA = "Kallang";
 
+const FETCH_TIMEOUT_MS = 8_000;
+// Results are cached per Worker isolate to save repeat API calls.
+const PLACES_CACHE_MS = 10 * 60_000;
+const FORECAST_CACHE_MS = 5 * 60_000;
+const PLACES_CACHE_MAX = 50;
+
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
 const FORECAST_URL =
   "https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast";
@@ -83,52 +89,117 @@ export const toolDefinitions = [
  * Run one tool call requested by the model and return the result as a string.
  */
 export async function executeTool(name, args, env) {
-  switch (name) {
-    case "find_lunch_places":
-      return JSON.stringify(await findLunchPlaces(args, env));
-    case "get_rain_forecast":
-      return JSON.stringify(await getRainForecast());
-    case "get_bus_arrivals":
-      return JSON.stringify(await getBusArrivals(args));
-    default:
-      return JSON.stringify({ error: `Unknown tool: ${name}` });
+  try {
+    switch (name) {
+      case "find_lunch_places":
+        return JSON.stringify(await findLunchPlaces(args, env));
+      case "get_rain_forecast":
+        return JSON.stringify(await getRainForecast());
+      case "get_bus_arrivals":
+        return JSON.stringify(await getBusArrivals(args));
+      default:
+        return JSON.stringify({ error: `Unknown tool: ${name}` });
+    }
+  } catch (err) {
+    // Hand failures back to the model as a tool error instead of failing the turn.
+    console.error(`tool ${name} failed:`, err?.message ?? err);
+    return JSON.stringify({ error: `${name} failed, try again later` });
   }
 }
+
+/**
+ * fetch + JSON parse with a timeout. Returns { data } or { error }.
+ */
+async function fetchJson(url, init = {}, label) {
+  let res;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    const reason = err?.name === "TimeoutError" ? "timed out" : "could not be reached";
+    return { error: `${label} ${reason}` };
+  }
+  if (!res.ok) {
+    return { error: `${label} returned ${res.status}` };
+  }
+  try {
+    return { data: await res.json() };
+  } catch {
+    return { error: `${label} returned a response that was not JSON` };
+  }
+}
+
+/**
+ * Tiny time-based cache, scoped to one Worker isolate.
+ */
+function createCache(ttlMs, maxEntries = Infinity) {
+  const entries = new Map();
+  return {
+    get(key) {
+      const hit = entries.get(key);
+      if (!hit) return undefined;
+      if (Date.now() - hit.at > ttlMs) {
+        entries.delete(key);
+        return undefined;
+      }
+      return hit.value;
+    },
+    set(key, value) {
+      if (entries.size >= maxEntries) {
+        entries.delete(entries.keys().next().value);
+      }
+      entries.set(key, { value, at: Date.now() });
+    },
+  };
+}
+
+const placesCache = createCache(PLACES_CACHE_MS, PLACES_CACHE_MAX);
+const forecastCache = createCache(FORECAST_CACHE_MS, 1);
 
 // ---------------------------------------------------------------------------
 // find_lunch_places
 // ---------------------------------------------------------------------------
 
 async function findLunchPlaces({ query, open_now = false }, env) {
-  const centre = CT_HUB_2;
+  if (!env.GOOGLE_PLACES_API_KEY) {
+    // Only this tool needs the key; rain and bus questions still work.
+    console.error("GOOGLE_PLACES_API_KEY is not set; find_lunch_places is unavailable");
+    return { error: "Place search is not set up right now. Do not make up places." };
+  }
+  if (typeof query !== "string" || !query.trim()) {
+    return { error: "query is required, e.g. \"chicken rice\"" };
+  }
 
+  const openNow = open_now === true;
+  const cacheKey = `${query.trim().toLowerCase()}|${openNow}`;
+  const cached = placesCache.get(cacheKey);
+  if (cached) return cached;
+
+  const centre = CT_HUB_2;
+  // No includedType: "restaurant" would drop hawker centres, food courts and cafes.
   const body = {
-    textQuery: query,
-    includedType: "restaurant",
-    openNow: open_now,
+    textQuery: query.trim(),
+    openNow,
     pageSize: MAX_PLACES,
     locationBias: {
       circle: { center: centre, radius: SEARCH_RADIUS_METRES },
     },
   };
 
-  const res = await fetch(PLACES_URL, {
+  const { data, error } = await fetchJson(PLACES_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "X-Goog-Api-Key": env.GOOGLE_PLACES_API_KEY,
       "X-Goog-FieldMask":
-        "places.id,places.displayName,places.location,places.rating,places.currentOpeningHours",
+        "places.displayName,places.location,places.rating,places.currentOpeningHours.openNow",
     },
     body: JSON.stringify(body),
-  });
+  }, "Places API");
+  if (error) return { error };
 
-  if (!res.ok) {
-    return { error: `Places API returned ${res.status}` };
-  }
-
-  const data = await res.json();
-  return { places: formatPlaces(data.places ?? [], centre, SEARCH_RADIUS_METRES) };
+  const result = { places: formatPlaces(data?.places ?? [], centre, SEARCH_RADIUS_METRES) };
+  placesCache.set(cacheKey, result);
+  return result;
 }
 
 /**
@@ -169,11 +240,15 @@ export function haversineMetres(a, b) {
 // ---------------------------------------------------------------------------
 
 async function getRainForecast() {
-  const res = await fetch(FORECAST_URL);
-  if (!res.ok) {
-    return { error: `Forecast API returned ${res.status}` };
-  }
-  return formatForecast(await res.json(), FORECAST_AREA);
+  const cached = forecastCache.get(FORECAST_AREA);
+  if (cached) return cached;
+
+  const { data, error } = await fetchJson(FORECAST_URL, {}, "Forecast API");
+  if (error) return { error };
+
+  const result = formatForecast(data, FORECAST_AREA);
+  if (!result.error) forecastCache.set(FORECAST_AREA, result);
+  return result;
 }
 
 /**
@@ -181,13 +256,16 @@ async function getRainForecast() {
  */
 export function formatForecast(payload, area) {
   const item = payload?.data?.items?.[0];
-  if (!item) {
+  if (!item || !Array.isArray(item.forecasts)) {
     return { error: "No forecast available" };
   }
-  const entry = item.forecasts.find((f) => f.area === area);
+  const entry = item.forecasts.find((f) => f?.area === area);
+  if (!entry?.forecast) {
+    return { error: `No forecast for ${area} right now` };
+  }
   return {
     area,
-    forecast: entry?.forecast ?? "Unknown",
+    forecast: entry.forecast,
     valid_period: item.valid_period?.text ?? null,
   };
 }
@@ -197,12 +275,25 @@ export function formatForecast(payload, area) {
 // ---------------------------------------------------------------------------
 
 async function getBusArrivals({ stop_code }) {
-  const url = `${BUS_URL}?id=${encodeURIComponent(stop_code)}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    return { error: `Bus API returned ${res.status}` };
+  const code = normaliseStopCode(stop_code);
+  if (!code) {
+    return { error: "stop_code must be a five-digit bus stop code, e.g. \"07371\"" };
   }
-  return formatBusArrivals(await res.json(), stop_code);
+  const { data, error } = await fetchJson(`${BUS_URL}?id=${code}`, {}, "Bus API");
+  if (error) return { error };
+  return formatBusArrivals(data, code);
+}
+
+/**
+ * Turn a model-supplied stop code into five digits, restoring a leading
+ * zero lost when it was sent as a number (7371 -> "07371").
+ * Returns null when it cannot be a valid code.
+ */
+export function normaliseStopCode(value) {
+  const text = typeof value === "number" && Number.isInteger(value) ? String(value)
+    : typeof value === "string" ? value.trim() : "";
+  if (!/^\d{1,5}$/.test(text)) return null;
+  return text.padStart(5, "0");
 }
 
 /**
