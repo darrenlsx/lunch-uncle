@@ -4,7 +4,56 @@ import {
   formatForecast,
   formatBusArrivals,
   haversineMetres,
+  formatPlaces,
+  CT_HUB_2,
 } from "../src/tools.js";
+import { formatSingaporeTime } from "../src/prompt.js";
+
+test("formatPlaces keeps open status and drops places beyond the radius", () => {
+  const places = [
+    {
+      displayName: { text: "Near and open" },
+      rating: 4.2,
+      location: { latitude: 1.3073, longitude: 103.8631 },
+      currentOpeningHours: { openNow: true },
+    },
+    {
+      displayName: { text: "Near and closed" },
+      location: { latitude: 1.3115, longitude: 103.8620 },
+      currentOpeningHours: { openNow: false },
+    },
+    {
+      displayName: { text: "Bedok, too far" },
+      rating: 4.8,
+      location: { latitude: 1.3236, longitude: 103.9273 },
+      currentOpeningHours: { openNow: true },
+    },
+    { displayName: { text: "No location" } },
+  ];
+
+  const result = formatPlaces(places, CT_HUB_2, 800);
+  assert.deepEqual(result.map((p) => [p.name, p.open_now, p.rating]), [
+    ["Near and open", true, 4.2],
+    ["Near and closed", false, null],
+  ]);
+  assert.ok(result[0].distance_m > 400 && result[0].distance_m < 550);
+});
+
+test("formatPlaces reports unknown open status as null", () => {
+  const [place] = formatPlaces(
+    [{ displayName: { text: "X" }, location: CT_HUB_2 }],
+    CT_HUB_2,
+  );
+  assert.equal(place.open_now, null);
+  assert.equal(place.distance_m, 0);
+});
+
+test("formatSingaporeTime converts UTC to SGT, including the day", () => {
+  // 04:30 UTC is 12:30 pm in Singapore.
+  assert.match(formatSingaporeTime(new Date("2026-11-20T04:30:00Z")), /Friday.*20 November 2026.*12:30\s?pm SGT/i);
+  // 16:30 UTC Friday is already 00:30 Saturday in Singapore.
+  assert.match(formatSingaporeTime(new Date("2026-11-20T16:30:00Z")), /Saturday.*21 November 2026.*12:30\s?am SGT/i);
+});
 
 test("formatForecast picks the requested area", () => {
   const payload = {

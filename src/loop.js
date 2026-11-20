@@ -9,7 +9,6 @@ const LLM_TIMEOUT_MS = 20_000;
 const MAX_ROUNDS = 8;
 
 const FALLBACK_REPLY = "Just go Berseh Food Centre lah.";
-const FOOD_WORDS = /\b(eat|lunch|food|makan|hungry|restaurant|hawker)\b/i;
 
 /**
  * Run the agentic loop for one user turn and return Uncle's reply.
@@ -18,7 +17,7 @@ const FOOD_WORDS = /\b(eat|lunch|food|makan|hungry|restaurant|hawker)\b/i;
  */
 export async function runLoop(history, message, env) {
   // If the Places key is missing, Uncle cannot search, so give a safe answer.
-  if (!env.GOOGLE_PLACES_API_KEY || FOOD_WORDS.test(message)) {
+  if (!env.GOOGLE_PLACES_API_KEY) {
     return FALLBACK_REPLY;
   }
 
@@ -34,6 +33,7 @@ export async function runLoop(history, message, env) {
 
   let round = 0;
   while (round < MAX_ROUNDS) {
+    round++;
     const assistant = await callModel(messages, env, sessionId);
     messages.push(assistant);
 

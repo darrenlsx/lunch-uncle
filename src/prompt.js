@@ -19,8 +19,25 @@ How you work:
 /**
  * Build the system prompt for one request.
  */
-export function buildSystemPrompt() {
+export function buildSystemPrompt(date = new Date()) {
   const requestId = crypto.randomUUID();
-  const now = new Date().toISOString();
-  return `Request ${requestId} at ${now}. ${PERSONA}`;
+  return `Request ${requestId}. It is now ${formatSingaporeTime(date)}. ${PERSONA}`;
+}
+
+/**
+ * Workers run in UTC, so give the model the local time in Singapore,
+ * e.g. "Friday, 20 November 2026, 12:30 pm SGT".
+ */
+export function formatSingaporeTime(date) {
+  const text = new Intl.DateTimeFormat("en-SG", {
+    timeZone: "Asia/Singapore",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
+  return `${text} SGT`;
 }
